@@ -68,6 +68,7 @@ class Prometheus(Middleware):
         self.total_retried_messages = None
         self.total_rejected_messages = None
         self.message_durations = None
+        self.message_total_durations = None
 
     @property
     def actor_options(self):
@@ -91,6 +92,7 @@ class Prometheus(Middleware):
             self.total_retried_messages,
             self.total_rejected_messages,
             self.message_durations,
+            self.message_total_durations,
         ]
         worker_queues = worker.consumer_whitelist if worker else None
         for metric in metrics:
@@ -135,6 +137,12 @@ class Prometheus(Middleware):
             ["queue_name", "actor_name"],
             registry=self.registry,
         )
+        self.message_total_durations = prom.Summary(
+            "remoulade_message_total_duration_milliseconds",
+            "The time spent waiting and processing messages.",
+            ["queue_name", "actor_name"],
+            registry=self.registry,
+        )
         for actor in broker.actors.values():
             self._init_labels(actor, worker)
 
@@ -174,10 +182,16 @@ class Prometheus(Middleware):
     def after_process_message(self, broker, message, *, result=None, exception=None):
         labels = self._get_labels(broker, message)
         message_start_time = self.message_start_times.pop(message.message_id, None)
+        message_enqueue_time = message.message_timestamp
         message_duration = 0
+        message_total_duration = 0
         if message_start_time is not None:
             message_duration = (time.monotonic() * 1000) - message_start_time
         self.message_durations.labels(*labels).observe(message_duration)
+        if isinstance(message_enqueue_time, int) and message_enqueue_time > 0:
+            current_timestamp_in_ms = int(time.time() * 1000)
+            message_total_duration = current_timestamp_in_ms - message_enqueue_time
+        self.message_total_durations.labels(*labels).observe(message_total_duration)
         if exception is not None:
             self.total_errored_messages.labels(*labels).inc()
         if not self.message_start_times:
